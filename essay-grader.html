@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Essay Grader</title>
+<style>
+  body{font-family:Georgia,serif;max-width:760px;margin:24px auto;padding:0 16px;color:#222;line-height:1.5}
+  h1{font-size:1.6em} h2{font-size:1.2em;margin-top:1.6em;border-bottom:1px solid #ccc;padding-bottom:4px}
+  label{display:block;margin:12px 0 4px}
+  input,textarea,button{font:inherit;padding:6px 8px;border:1px solid #888;border-radius:2px;background:#fff}
+  input,textarea{width:100%;box-sizing:border-box}
+  button{cursor:pointer;background:#eee;margin:6px 6px 6px 0} button:hover{background:#ddd}
+  table{border-collapse:collapse;width:100%;font-size:.95em} td,th{border:1px solid #bbb;padding:5px;text-align:left;vertical-align:top}
+  .msg{margin:12px 0;padding:8px;border:1px solid #999} .hide{display:none}
+  img.preview{max-width:100%;margin-top:8px;border:1px solid #ccc}
+  .tabs button.on{background:#222;color:#fff}
+  .small{font-size:.85em;color:#555}
+</style>
+</head>
+<body>
+
+<script>
+// Paste your Apps Script web app URL (ends with /exec) here.
+const API = 'https://script.google.com/macros/s/AKfycbwTCqSR1Imgw5R_g95e94FLbLxtTrFegtJ2fRC-1ANb2ROgpXH76hjcesUlKicK1Vcc/exec';
+</script>
+
+<!-- STUDENT VIEW -->
+<div id="student">
+  <h1 id="sTitle">Essay Submission</h1>
+  <div id="sState" class="msg">Checking status...</div>
+  <div id="sForm" class="hide">
+    <label>Full name</label><input id="sName">
+    <label>Student ID</label><input id="sId">
+    <label>Password given by your teacher</label><input id="sPass" autocomplete="off">
+    <label>Photo or scan of your handwritten essay</label>
+    <input id="sFile" type="file" accept="image/*">
+    <img id="sPrev" class="preview hide" alt="Preview">
+    <p><button id="sSend">Submit essay</button></p>
+    <div id="sMsg"></div>
+  </div>
+  <p class="small"><a href="?teacher">Teacher panel</a></p>
+</div>
+
+<!-- TEACHER VIEW -->
+<div id="teacher" class="hide">
+  <h1>Teacher Panel</h1>
+  <div id="tLogin">
+    <label>Teacher key</label><input id="tKey" type="password">
+    <p><button id="tGo">Sign in</button></p>
+    <div id="tLoginMsg" class="msg hide"></div>
+  </div>
+
+  <div id="tMain" class="hide">
+    <div class="tabs">
+      <button data-t="a" class="on">Access</button>
+      <button data-t="b">Passwords</button>
+      <button data-t="c">Submissions</button>
+      <button data-t="d">QR code</button>
+    </div>
+
+    <div id="tab-a">
+      <h2>Open or close submissions</h2>
+      <label>Essay title or topic (shown to students)</label><input id="tTitle">
+      <p>Status: <strong id="tStatus"></strong></p>
+      <button id="tOpen">Open</button><button id="tClose">Close</button>
+    </div>
+
+    <div id="tab-b" class="hide">
+      <h2>Generate passwords</h2>
+      <label>How many (one per student, each works once)</label>
+      <input id="tCount" type="number" value="30" min="1" max="200">
+      <p><button id="tGen">Generate</button><button id="tCopy">Copy unused</button></p>
+      <table id="tPw"></table>
+    </div>
+
+    <div id="tab-c" class="hide">
+      <h2>Submissions</h2>
+      <button id="tRefresh">Refresh</button>
+      <table id="tSub"></table>
+    </div>
+
+    <div id="tab-d" class="hide">
+      <h2>QR code for students</h2>
+      <p class="small">Students scan this to open the submission page. Host this file online first (GitHub Pages, Netlify, or similar).</p>
+      <div id="qr" style="margin:12px 0"></div>
+      <p id="qrUrl" class="small"></p>
+      <button onclick="window.print()">Print</button>
+    </div>
+    <div id="tMsg" class="msg hide"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const isTeacher = location.search.includes('teacher');
+let KEY = '';
+
+async function api(body) {
+  const r = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(body) });
+  return r.json();
+}
+function show(el, text) { el.textContent = text; el.classList.remove('hide'); }
+
+/* ---------- Image shrinking ---------- */
+function shrink(file, max = 1600) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = img.width * k; c.height = img.height * k;
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      res(c.toDataURL('image/jpeg', 0.8).split(',')[1]);
+    };
+    img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+/* ---------- Student ---------- */
+async function initStudent() {
+  try {
+    const s = await (await fetch(API)).json();
+    $('sTitle').textContent = s.title || 'Essay Submission';
+    if (s.open) { $('sState').classList.add('hide'); $('sForm').classList.remove('hide'); }
+    else $('sState').textContent = 'Submissions are closed right now.';
+  } catch (e) { $('sState').textContent = 'Cannot reach the server. Check the web app URL.'; }
+}
+$('sFile').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  $('sPrev').src = URL.createObjectURL(f); $('sPrev').classList.remove('hide');
+};
+$('sSend').onclick = async () => {
+  const name = $('sName').value.trim(), sid = $('sId').value.trim(), pw = $('sPass').value.trim(), f = $('sFile').files[0];
+  if (!name || !sid || !pw || !f) return show($('sMsg'), 'Please fill in every field and choose a picture.');
+  $('sSend').disabled = true; show($('sMsg'), 'Uploading, please wait...');
+  try {
+    const image = await shrink(f);
+    const r = await api({ action: 'submit', name, sid, password: pw, image });
+    if (r.ok) { $('sForm').innerHTML = '<div class="msg">Your essay was received. You can close this page.</div>'; }
+    else { show($('sMsg'), r.error); $('sSend').disabled = false; }
+  } catch (e) { show($('sMsg'), 'Upload failed. Try again.'); $('sSend').disabled = false; }
+};
+
+/* ---------- Teacher ---------- */
+function setStatus(open) { $('tStatus').textContent = open ? 'OPEN' : 'CLOSED'; }
+$('tGo').onclick = async () => {
+  KEY = $('tKey').value;
+  const r = await api({ action: 'login', key: KEY });
+  if (!r.ok) return show($('tLoginMsg'), r.error);
+  $('tLogin').classList.add('hide'); $('tMain').classList.remove('hide');
+  $('tTitle').value = r.title; setStatus(r.open);
+  const base = location.origin + location.pathname;
+  $('qrUrl').textContent = base;
+  new QRCode($('qr'), { text: base, width: 220, height: 220 });
+};
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  ['a', 'b', 'c', 'd'].forEach(t => $('tab-' + t).classList.toggle('hide', t !== b.dataset.t));
+  if (b.dataset.t === 'b') loadPw();
+  if (b.dataset.t === 'c') loadSub();
+});
+async function toggle(open) {
+  const r = await api({ action: 'setOpen', key: KEY, open, title: $('tTitle').value });
+  if (r.ok) setStatus(open); else show($('tMsg'), r.error);
+}
+$('tOpen').onclick = () => toggle(true);
+$('tClose').onclick = () => toggle(false);
+
+async function loadPw() {
+  const r = await api({ action: 'passwords', key: KEY });
+  window._pw = r.rows || [];
+  $('tPw').innerHTML = '<tr><th>Password</th><th>Used</th><th>Student</th></tr>' +
+    window._pw.map(x => `<tr><td>${x.code}</td><td>${x.used}</td><td>${x.student || ''}</td></tr>`).join('');
+}
+$('tGen').onclick = async () => {
+  await api({ action: 'genPasswords', key: KEY, count: +$('tCount').value });
+  loadPw();
+};
+$('tCopy').onclick = () => {
+  const t = (window._pw || []).filter(x => x.used !== 'yes').map(x => x.code).join('\n');
+  navigator.clipboard.writeText(t); show($('tMsg'), 'Unused passwords copied.');
+};
+
+async function loadSub() {
+  const r = await api({ action: 'list', key: KEY });
+  const rows = r.rows || [];
+  $('tSub').innerHTML = '<tr><th>Student</th><th>Scan</th><th>AI first grade</th><th>Final grade /16</th><th>Feedback</th><th></th></tr>' +
+    rows.map(x => `<tr>
+      <td>${esc(x.name)}<br><span class="small">${esc(x.sid)}</span></td>
+      <td><a href="${x.scan}" target="_blank" rel="noopener">Open</a></td>
+      <td id="ai${x.row}">${aiCell(x)}</td>
+      <td><input id="g${x.row}" value="${esc(x.grade)}" style="width:70px"></td>
+      <td><textarea id="f${x.row}" rows="3">${esc(x.feedback)}</textarea></td>
+      <td><button onclick="saveGrade(${x.row})">Save</button></td></tr>`).join('');
+  window._rows = rows;
+}
+function aiCell(x) {
+  const has = x.ai !== '' && x.ai != null;
+  return (has ? `<strong>${esc(x.ai)}/16</strong><br><span class="small">${esc(x.aiFeedback)}</span><br>
+    <button onclick="useAi(${x.row})">Use this grade</button>` : '') +
+    `<button onclick="runAi(${x.row})">${has ? 'Regrade' : 'AI grade'}</button>`;
+}
+async function runAi(row) {
+  const cell = $('ai' + row); cell.textContent = 'Grading, please wait...';
+  const r = await api({ action: 'aiGrade', key: KEY, row, topic: $('tTitle').value });
+  const x = window._rows.find(z => z.row === row);
+  if (r.ok) { x.ai = r.ai; x.aiFeedback = r.aiFeedback; } else show($('tMsg'), r.error);
+  cell.innerHTML = aiCell(x);
+}
+function useAi(row) {
+  const x = window._rows.find(z => z.row === row);
+  $('g' + row).value = x.ai; $('f' + row).value = x.aiFeedback;
+}
+async function saveGrade(row) {
+  const r = await api({ action: 'grade', key: KEY, row, grade: $('g' + row).value, feedback: $('f' + row).value });
+  show($('tMsg'), r.ok ? 'Saved.' : r.error);
+}
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+if (isTeacher) { $('student').classList.add('hide'); $('teacher').classList.remove('hide'); }
+else initStudent();
+</script>
+</body>
+</html>
