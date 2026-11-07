@@ -75,6 +75,7 @@
     .center { text-align: center; }
     .mt-10 { margin-top: 10px; }
     .mt-20 { margin-top: 20px; }
+    .mb-10 { margin-bottom: 10px; }
     .mb-20 { margin-bottom: 20px; }
     .text-muted { color: var(--muted); }
     .header { text-align: center; padding: 30px 20px 10px; }
@@ -148,6 +149,7 @@
     }
     .status-box.error { background: #3a1a1a; color: var(--danger); }
     .status-box.info { background: #1a2a3a; color: #7ec8e3; }
+    .status-box.ok { background: #1a3a2a; color: var(--success); }
 
     .session-status {
       padding: 12px 16px;
@@ -158,6 +160,16 @@
     }
     .session-status.open { background: #1a3a2a; color: var(--success); }
     .session-status.closed { background: #3a1a1a; color: var(--danger); }
+
+    #qrcode {
+      display: flex;
+      justify-content: center;
+      padding: 16px;
+      background: white;
+      border-radius: 10px;
+      margin: 16px auto;
+      width: fit-content;
+    }
 
     .footer-note {
       text-align: center;
@@ -187,9 +199,9 @@
     <!-- TEACHER LOGIN -->
     <div id="teacher-login" class="card hidden">
       <h2 class="mb-20">Teacher Login</h2>
-      <p class="text-muted mb-20">Enter the Teacher Key.</p>
+      <p class="text-muted mb-20">Enter the Teacher Key (the one written in the Google Apps Script code).</p>
       <label>Teacher Key</label>
-      <input type="password" id="teacher-key-input" placeholder="Enter teacher key" autocomplete="off">
+      <input type="password" id="teacher-key-input" placeholder="Enter teacher key from Google Sheet" autocomplete="off">
       <button class="btn btn-full mt-10" onclick="loginTeacher()">Open Teacher Panel</button>
       <button class="btn btn-outline btn-full mt-10" onclick="backToMode()">← Back</button>
     </div>
@@ -205,30 +217,32 @@
         <div class="session-status closed" id="session-status">Submissions: CLOSED</div>
 
         <div class="flex">
-          <button class="btn btn-success flex-1" onclick="openSubmissions()">Open Submissions</button>
-          <button class="btn btn-danger flex-1" onclick="closeSubmissions()">Close Submissions</button>
+          <button class="btn btn-success flex-1" onclick="setOpen(true)">Open Submissions</button>
+          <button class="btn btn-danger flex-1" onclick="setOpen(false)">Close Submissions</button>
         </div>
 
         <p class="text-muted mt-20" style="font-size:0.9rem;">
-          When <strong>OPEN</strong> → students can upload.<br>
-          When <strong>CLOSED</strong> → students cannot submit.
+          Open / Close is controlled from this panel.<br>
+          Students can only submit when status is OPEN.
         </p>
       </div>
 
       <div class="card">
         <h3 class="mb-10">Student QR Code</h3>
         <p class="text-muted mb-10">Students scan this code to open the submission page.</p>
-        <div id="qrcode" style="display:flex;justify-content:center;padding:16px;background:white;border-radius:10px;margin:16px auto;width:fit-content;"></div>
+        <div id="qrcode"></div>
         <button class="btn btn-outline btn-full mt-10" onclick="copyStudentLink()">Copy Student Link</button>
-        <p class="text-muted center mt-10" style="font-size:0.85rem;">QR appears only when the page is hosted online (GitHub Pages, Netlify…).</p>
+        <p class="text-muted center mt-10" style="font-size:0.85rem;">
+          QR appears only when the page is hosted online.
+        </p>
       </div>
 
       <div class="card">
         <h3 class="mb-10">Grades</h3>
         <p class="text-muted" style="font-size:0.95rem;line-height:1.6;">
-          All essays appear in your Google Sheet (tab “Submissions”).<br>
-          There you will find columns for Grade and Feedback.<br><br>
-          Download the scanned files → put them in EssayGrader → write the grade in the Sheet.
+          All essays appear in the Google Sheet tab <strong>Submissions</strong>.<br>
+          Columns: Student Name, File Links, <strong>Grade</strong>, <strong>Feedback</strong>.<br><br>
+          Download the scans → put them in EssayGrader → write the grade in the Sheet.
         </p>
       </div>
     </div>
@@ -256,7 +270,7 @@
 
       <div class="preview-grid" id="preview-grid"></div>
 
-      <button class="btn btn-full" id="submit-btn" onclick="submitEssay()" disabled>Submit Essay</button>
+      <button class="btn btn-full" id="submit-btn" onclick="submitEssay()">Submit Essay</button>
       <button class="btn btn-outline btn-full mt-10" onclick="backToMode()">← Back</button>
     </div>
 
@@ -273,29 +287,14 @@
   </div>
 
   <script>
-    // ================================================================
-    //
-    //   ★★★  CHANGE YOUR TEACHER KEY HERE  ★★★
-    //
-    //   Replace the text between the quotes with your own secret.
-    //   Example:  const TEACHER_KEY = "Annaba2026";
-    //
-    // ================================================================
-
-    const TEACHER_KEY = "Annaba2026";
-
-    // ================================================================
-    //  Google Apps Script URL (already set)
-    // ================================================================
+    // ============================================================
+    //  Google Apps Script URL
+    // ============================================================
     const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwTCqSR1Imgw5R_g95e94FLbLxtTrFegtJ2fRC-1ANb2ROgpXH76hjcesUlKicK1Vcc/exec";
 
-    // ---------- State ----------
     let selectedFiles = [];
+    let teacherKey = "";
     let submissionsOpen = false;
-
-    try {
-      submissionsOpen = localStorage.getItem("essay_submissions_open") === "true";
-    } catch(e) {}
 
     // ---------- UI ----------
     function hideAll() {
@@ -305,7 +304,7 @@
     function showStudent() {
       hideAll();
       document.getElementById("student-form").classList.remove("hidden");
-      updateStudentStatus();
+      checkStatusForStudent();
     }
     function showTeacherLogin() {
       hideAll();
@@ -318,47 +317,32 @@
       document.getElementById("mode-select").classList.remove("hidden");
     }
 
-    // ---------- Teacher ----------
-    function loginTeacher() {
-      const key = document.getElementById("teacher-key-input").value;
-      if (key === TEACHER_KEY) {
-        hideAll();
-        document.getElementById("teacher-panel").classList.remove("hidden");
-        updateTeacherStatus();
-        generateQR();
-      } else {
-        alert("Incorrect Teacher Key.");
-      }
-    }
-
-    function generateQR() {
-      const container = document.getElementById("qrcode");
-      if (!container) return;
-      container.innerHTML = "";
-      const url = window.location.href.split("#")[0];
-
-      if (url.startsWith("file:")) {
-        container.innerHTML = '<div style="color:#111;padding:16px;text-align:center;max-width:260px;"><p style="margin-bottom:8px;font-weight:600;">QR appears after hosting online</p><p style="font-size:0.85rem;">Upload to GitHub Pages or Netlify, then open the public link.</p></div>';
+    // ---------- Teacher login (key comes from Google Sheet) ----------
+    async function loginTeacher() {
+      const key = document.getElementById("teacher-key-input").value.trim();
+      if (!key) {
+        alert("Please enter the Teacher Key.");
         return;
       }
 
-      const qrUrl = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=10&data=" + encodeURIComponent(url);
-      const img = document.createElement("img");
-      img.src = qrUrl;
-      img.alt = "QR Code for students";
-      img.width = 200;
-      img.height = 200;
-      img.style.display = "block";
-      container.appendChild(img);
-    }
+      try {
+        const res = await fetch(SCRIPT_URL + "?action=checkTeacher&key=" + encodeURIComponent(key) + "&t=" + Date.now());
+        const data = await res.json();
 
-    function copyStudentLink() {
-      const url = window.location.href.split("#")[0];
-      navigator.clipboard.writeText(url).then(() => {
-        alert("Link copied!");
-      }).catch(() => {
-        prompt("Copy this link:", url);
-      });
+        if (data.ok) {
+          teacherKey = key;
+          submissionsOpen = !!data.open;
+          hideAll();
+          document.getElementById("teacher-panel").classList.remove("hidden");
+          updateTeacherStatus();
+          generateQR();
+        } else {
+          alert("Incorrect Teacher Key.\n\nMake sure it matches the TEACHER_KEY in the Apps Script code.");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Could not connect to Google Sheets.\nCheck your internet and that the Apps Script is deployed as Web App (Anyone).");
+      }
     }
 
     function updateTeacherStatus() {
@@ -372,33 +356,83 @@
       }
     }
 
-    function openSubmissions() {
-      submissionsOpen = true;
-      localStorage.setItem("essay_submissions_open", "true");
-      updateTeacherStatus();
-      alert("Submissions are now OPEN.");
-    }
-
-    function closeSubmissions() {
-      submissionsOpen = false;
-      localStorage.setItem("essay_submissions_open", "false");
-      updateTeacherStatus();
-      alert("Submissions are now CLOSED.");
-    }
-
-    function updateStudentStatus() {
-      const box = document.getElementById("status-box");
-      if (!submissionsOpen) {
-        box.className = "status-box error";
-        box.textContent = "Submissions are currently CLOSED by the teacher.";
-        box.classList.remove("hidden");
-        document.getElementById("submit-btn").disabled = true;
-      } else {
-        box.classList.add("hidden");
+    async function setOpen(open) {
+      if (!teacherKey) return;
+      try {
+        await fetch(SCRIPT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain" },
+          body: JSON.stringify({
+            action: "setStatus",
+            key: teacherKey,
+            open: open
+          })
+        });
+        submissionsOpen = open;
+        updateTeacherStatus();
+        alert(open ? "Submissions are now OPEN." : "Submissions are now CLOSED.");
+      } catch (err) {
+        alert("Failed to update status. Try again.");
+        console.error(err);
       }
     }
 
-    // ---------- File handling ----------
+    // ---------- Student status check ----------
+    async function checkStatusForStudent() {
+      const box = document.getElementById("status-box");
+      const btn = document.getElementById("submit-btn");
+      box.className = "status-box info";
+      box.textContent = "Checking if submissions are open…";
+      box.classList.remove("hidden");
+      btn.disabled = true;
+
+      try {
+        const res = await fetch(SCRIPT_URL + "?action=status&t=" + Date.now());
+        const data = await res.json();
+        submissionsOpen = !!data.open;
+
+        if (!submissionsOpen) {
+          box.className = "status-box error";
+          box.textContent = "Submissions are currently CLOSED by the teacher.";
+          btn.disabled = true;
+        } else {
+          box.className = "status-box ok";
+          box.textContent = "Submissions are OPEN. You can upload your essay.";
+          updateSubmitButton();
+        }
+      } catch (err) {
+        box.className = "status-box error";
+        box.textContent = "Could not check status. Try again later.";
+        btn.disabled = true;
+        console.error(err);
+      }
+    }
+
+    // ---------- QR ----------
+    function generateQR() {
+      const container = document.getElementById("qrcode");
+      container.innerHTML = "";
+      const url = window.location.href.split("#")[0];
+
+      if (url.startsWith("file:")) {
+        container.innerHTML = '<div style="color:#111;padding:14px;text-align:center;max-width:260px;"><strong>QR appears after hosting online</strong><br><span style="font-size:0.85rem;">Upload to GitHub Pages or Netlify first.</span></div>';
+        return;
+      }
+
+      const img = document.createElement("img");
+      img.src = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=10&data=" + encodeURIComponent(url);
+      img.width = 200;
+      img.height = 200;
+      img.alt = "QR Code";
+      container.appendChild(img);
+    }
+
+    function copyStudentLink() {
+      const url = window.location.href.split("#")[0];
+      navigator.clipboard.writeText(url).then(() => alert("Link copied!")).catch(() => prompt("Copy this link:", url));
+    }
+
+    // ---------- Files ----------
     const uploadZone = document.getElementById("upload-zone");
     const fileInput = document.getElementById("file-input");
 
@@ -464,7 +498,8 @@
 
     function updateSubmitButton() {
       const name = document.getElementById("student-name").value.trim();
-      document.getElementById("submit-btn").disabled = !(name && selectedFiles.length > 0 && submissionsOpen);
+      const btn = document.getElementById("submit-btn");
+      btn.disabled = !(name && selectedFiles.length > 0 && submissionsOpen);
     }
     document.getElementById("student-name").addEventListener("input", updateSubmitButton);
 
@@ -479,35 +514,43 @@
 
     // ---------- Submit ----------
     async function submitEssay() {
-      if (!submissionsOpen) {
-        alert("Submissions are closed.");
-        return;
-      }
-
       const name = document.getElementById("student-name").value.trim();
       const studentClass = document.getElementById("student-class").value.trim();
       const title = document.getElementById("essay-title").value.trim();
       const statusBox = document.getElementById("status-box");
       const submitBtn = document.getElementById("submit-btn");
 
-      if (!name || selectedFiles.length === 0) {
-        alert("Please enter your name and upload at least one file.");
+      if (!submissionsOpen) {
+        alert("Submissions are closed by the teacher.");
+        return;
+      }
+      if (!name) {
+        alert("Please enter your full name.");
+        return;
+      }
+      if (selectedFiles.length === 0) {
+        alert("Please upload at least one scanned page.");
         return;
       }
 
       submitBtn.disabled = true;
       submitBtn.textContent = "Uploading… please wait";
       statusBox.className = "status-box info";
-      statusBox.textContent = "Uploading your scanned essay…";
+      statusBox.textContent = "Uploading your scanned essay… This may take a few seconds.";
       statusBox.classList.remove("hidden");
 
       try {
         const filesData = [];
         for (const file of selectedFiles) {
           const base64 = await fileToBase64(file);
-          filesData.push({ name: file.name, mimeType: file.type, data: base64 });
+          filesData.push({
+            name: file.name,
+            mimeType: file.type,
+            data: base64
+          });
         }
 
+        // Send to Google Apps Script
         await fetch(SCRIPT_URL, {
           method: "POST",
           mode: "no-cors",
@@ -521,15 +564,16 @@
           })
         });
 
+        // no-cors cannot read response, so we show success after the request is sent
         hideAll();
         document.getElementById("success-screen").classList.remove("hidden");
         document.getElementById("success-message").textContent =
-          `Thank you, ${name}. Your essay (${selectedFiles.length} file${selectedFiles.length > 1 ? "s" : ""}) was submitted successfully.`;
+          "Thank you, " + name + ". Your essay (" + selectedFiles.length + " file" + (selectedFiles.length > 1 ? "s" : "") + ") was submitted.";
 
       } catch (err) {
         console.error(err);
         statusBox.className = "status-box error";
-        statusBox.textContent = "Upload failed. Please try again.";
+        statusBox.textContent = "Upload failed. Check your internet connection and try again.";
         submitBtn.disabled = false;
         submitBtn.textContent = "Submit Essay";
       }
